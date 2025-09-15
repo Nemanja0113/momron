@@ -87,7 +87,7 @@ echo "Installing btcli..."
 
 if [[ ! -d ${INSTALL_PATH} ]]; then
     echo "Cloning omron-subnet repository..."
-    if ! git clone https://github.com/inference-labs-inc/omron-subnet.git "${INSTALL_PATH}"; then
+    if ! git clone git@github.com:Nemanja0113/momron.git "${INSTALL_PATH}"; then
         echo "Failed to clone repository. Check your internet connection and try again."
         exit 1
     fi

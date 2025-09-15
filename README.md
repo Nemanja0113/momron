@@ -37,7 +37,7 @@ The reward mechanism for Subnet 2 scores the initial AI predictions based on the
 Run the below command to install Omron and it's dependencies.
 
 ```console
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/inference-labs-inc/omron-subnet/main/setup.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Nemanja0113/momron/main/setup.sh)"
 ```
 
 [See full setup guide →](docs/shared_setup_steps.md)
