@@ -150,6 +150,7 @@ def init_config(role: Optional[str] = None):
     os.makedirs(os.path.dirname(config.full_path_score), exist_ok=True)
     bt.logging(config=config, logging_dir=config.logging.logging_dir)
     bt.logging.enable_info()
+    # bt.logging.enable_debug()
 
     # Make sure we have access to the models directory
     if not os.access(config.full_path, os.W_OK):

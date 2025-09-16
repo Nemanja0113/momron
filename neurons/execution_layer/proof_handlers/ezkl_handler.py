@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import os
+import time
 from typing import TYPE_CHECKING
 import subprocess
 import bittensor as bt
@@ -51,23 +52,48 @@ class EZKLHandler(ProofSystemHandler):
             self.generate_witness(session)
             bt.logging.trace("Generating proof")
 
+            bt.logging.info(f"------Model ID: {session.session_storage.model_id}")
+
+            # Prepare the request payload
+            payload = {
+                "model_type": session.session_storage.model_id,
+                "witness_path": session.session_storage.witness_path,
+                "proof_path": session.session_storage.proof_path
+            }
+            
+            # Map model IDs to their corresponding server ports
+            model_port_mapping = {
+                "1876cfa9fb3c418b2559f3f7074db20565b5ca7237efdd43b907d9d697a452c4": 8100,
+                "43ecaacaded5ed16c9e08bc054366e409c7925245eca547472b27f2a61469cc5": 8102,
+                "31df94d233053d9648c3c57362d9aa8aaa0f77761ac520af672103dbb387a6a5": 8104
+            }
+            
+            # Get the port for the current model ID
+            model_id = session.session_storage.model_id
+            port = model_port_mapping.get(model_id, 8100)  # Default to 8100 if model ID not found
+            
+            start_time = time.time()
+
+            
+            # Make HTTP request to EZKL service
             result = subprocess.run(
                 [
-                    LOCAL_EZKL_PATH,
-                    "prove",
-                    "--witness",
-                    session.session_storage.witness_path,
-                    "--compiled-circuit",
-                    session.model.paths.compiled_model,
-                    "--pk-path",
-                    session.model.paths.pk,
-                    "--proof-path",
-                    session.session_storage.proof_path,
+                    "curl",
+                    "-X", "POST",
+                    f"http://127.0.0.1:{port}/prove",
+                    "-H", "Content-Type: application/json",
+                    "-d", json.dumps(payload),
+                    "--silent",
+                    "--show-error"
                 ],
                 check=True,
                 capture_output=True,
                 text=True,
             )
+
+            proof_time = time.time() - start_time
+            bt.logging.info(f"Proof generation service took {proof_time} seconds")
+
 
             bt.logging.trace(
                 f"Proof generated: {session.session_storage.proof_path}, result: {result.stdout}"
