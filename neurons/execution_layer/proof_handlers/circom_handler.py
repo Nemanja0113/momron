@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 # trunk-ignore(bandit/B404)
 import subprocess
@@ -43,6 +44,7 @@ class CircomHandler(ProofSystemHandler):
                 pk_path=session.model.paths.pk,
                 proof_path=session.session_storage.proof_path,
                 public_path=session.session_storage.public_path,
+                base_path=session.session_storage.base_path,
             )
 
             return proof
@@ -53,22 +55,72 @@ class CircomHandler(ProofSystemHandler):
 
     def generate_witness(self, session, return_content: bool = False):
         try:
-            bt.logging.debug("Generating witness")
-            command = [
-                LOCAL_SNARKJS_PATH,
-                "wc",
-                session.model.paths.compiled_model,
-                session.session_storage.input_path,
-                session.session_storage.witness_path,
-            ]
-
-            # trunk-ignore(bandit/B603)
-            result = subprocess.run(command, check=True, capture_output=True, text=True)
-
-            if result.returncode == 0:
-                bt.logging.info(
-                    f"Generated witness in {session.session_storage.witness_path}"
+            bt.logging.debug("Generating witness with optimized methods")
+            # Use .wtns for GPU prover compatibility
+            witness_wtns = os.path.join(
+                session.session_storage.base_path,
+                f"witness_{session.model.id}_{session.session_id}.wtns",
+            )
+            
+            # Try optimized witness generation methods in order of preference
+            witness_generated = False
+            
+            # Method 1: Try native C++ witness generation (fastest)
+            try:
+                witness_generated = self._generate_witness_native(
+                    session, witness_wtns
                 )
+                if witness_generated:
+                    bt.logging.info(f"Generated witness using native C++ method: {witness_wtns}")
+            except Exception as e:
+                bt.logging.debug(f"Native witness generation failed: {e}")
+            
+            # Method 2: Try ultra-fast witness generation script
+            if not witness_generated:
+                try:
+                    witness_generated = self._generate_witness_ultra_fast(
+                        session, witness_wtns
+                    )
+                    if witness_generated:
+                        bt.logging.info(f"Generated witness using ultra-fast method: {witness_wtns}")
+                except Exception as e:
+                    bt.logging.debug(f"Ultra-fast witness generation failed: {e}")
+            
+            # Method 3: Try fast witness generation script
+            if not witness_generated:
+                try:
+                    witness_generated = self._generate_witness_fast(
+                        session, witness_wtns
+                    )
+                    if witness_generated:
+                        bt.logging.info(f"Generated witness using fast method: {witness_wtns}")
+                except Exception as e:
+                    bt.logging.debug(f"Fast witness generation failed: {e}")
+            
+            # Method 4: Fallback to standard snarkjs
+            if not witness_generated:
+                bt.logging.debug("Falling back to standard snarkjs witness generation")
+                command = [
+                    LOCAL_SNARKJS_PATH,
+                    "wtns",
+                    "calculate",
+                    session.model.paths.compiled_model,
+                    session.session_storage.input_path,
+                    witness_wtns,
+                ]
+
+                # trunk-ignore(bandit/B603)
+                result = subprocess.run(command, check=True, capture_output=True, text=True)
+
+                if result.returncode == 0:
+                    witness_generated = True
+                    bt.logging.info(f"Generated witness using standard snarkjs: {witness_wtns}")
+                else:
+                    bt.logging.error(f"Failed to generate witness. Error: {result.stderr}")
+                    bt.logging.error(f"Command output: {result.stdout}")
+                    raise RuntimeError(f"Witness generation failed: {result.stderr}")
+            
+            if witness_generated:
                 if return_content:
                     json_path = os.path.join(
                         session.session_storage.base_path, "witness.json"
@@ -78,7 +130,7 @@ class CircomHandler(ProofSystemHandler):
                         [
                             LOCAL_SNARKJS_PATH,
                             "wej",
-                            session.session_storage.witness_path,
+                            witness_wtns,
                             json_path,
                         ],
                         check=True,
@@ -87,10 +139,10 @@ class CircomHandler(ProofSystemHandler):
                     )
                     with open(json_path, "r", encoding="utf-8") as f:
                         return json.load(f)
-                return session.session_storage.witness_path
-            bt.logging.error(f"Failed to generate witness. Error: {result.stderr}")
-            bt.logging.error(f"Command output: {result.stdout}")
-            raise RuntimeError(f"Witness generation failed: {result.stderr}")
+                return witness_wtns
+            else:
+                raise RuntimeError("All witness generation methods failed")
+                
         except subprocess.CalledProcessError as e:
             bt.logging.error(f"Error generating witness: {e}")
             bt.logging.error(f"Command output: {e.stdout}")
@@ -168,39 +220,629 @@ class CircomHandler(ProofSystemHandler):
 
     @staticmethod
     def proof_worker(
-        input_path, circuit_path, pk_path, proof_path, public_path
+        input_path, circuit_path, pk_path, proof_path, public_path, base_path
     ) -> tuple[str, str]:
         try:
+            # Check if snarkjs-fork wrapper should be used (default to true for better performance)
+            use_snarkjs_fork = os.environ.get("USE_SNARKJS_FORK", "true").lower() == "true"
+            snarkjs_fork_path = os.environ.get("SNARKJS_FORK_PATH", "")
+            
+            # Auto-detect snarkjs-fork path if not set
+            if use_snarkjs_fork and not snarkjs_fork_path:
+                # Look for snarkjs-fork in common locations
+                possible_paths = [
+                    "/workspace/snarkjs-fork",
+                    "/workspace/omron-icicle-snark/snarkjs-fork", 
+                    os.path.join(os.path.dirname(__file__), "..", "..", "..", "snarkjs-fork"),
+                    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "snarkjs-fork"),
+                    # Add current working directory and relative paths
+                    os.path.join(os.getcwd(), "snarkjs-fork"),
+                    os.path.abspath("snarkjs-fork"),
+                    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "snarkjs-fork"))
+                ]
+                for path in possible_paths:
+                    if os.path.exists(os.path.join(path, "scripts", "run_proof.sh")):
+                        snarkjs_fork_path = os.path.abspath(path)
+                        bt.logging.info(f"Auto-detected snarkjs-fork path: {snarkjs_fork_path}")
+                        break
+                
+                # If still not found, try to find it relative to the current file
+                if not snarkjs_fork_path:
+                    current_file_dir = os.path.dirname(os.path.abspath(__file__))
+                    # Go up to the project root and look for snarkjs-fork
+                    project_root = os.path.abspath(os.path.join(current_file_dir, "..", "..", "..", ".."))
+                    snarkjs_fork_candidate = os.path.join(project_root, "snarkjs-fork")
+                    if os.path.exists(os.path.join(snarkjs_fork_candidate, "scripts", "run_proof.sh")):
+                        snarkjs_fork_path = snarkjs_fork_candidate
+                        bt.logging.info(f"Found snarkjs-fork at project root: {snarkjs_fork_path}")
+            
+            if use_snarkjs_fork and snarkjs_fork_path and os.path.exists(snarkjs_fork_path):
+                return CircomHandler._proof_worker_snarkjs_fork(
+                    input_path, circuit_path, pk_path, proof_path, public_path, base_path, snarkjs_fork_path
+                )
+            else:
+                return CircomHandler._proof_worker_direct(
+                    input_path, circuit_path, pk_path, proof_path, public_path, base_path
+                )
+        except subprocess.CalledProcessError as e:
+            bt.logging.error(f"Error generating proof: {e}")
+            bt.logging.error(f"Proof generation stdout: {e.stdout}")
+            bt.logging.error(f"Proof generation stderr: {e.stderr}")
+            raise
+
+    @staticmethod
+    def _proof_worker_snarkjs_fork(
+        input_path, circuit_path, pk_path, proof_path, public_path, base_path, snarkjs_fork_path
+    ) -> tuple[str, str]:
+        """Use snarkjs-fork wrapper for GPU-accelerated proof generation."""
+        try:
+            # Extract circuit type from model path (assuming model_id format)
+            circuit_type = os.path.basename(os.path.dirname(circuit_path)).replace("model_", "circuit_")
+            
+            # Set up environment variables for snarkjs-fork with performance optimizations
+            env = os.environ.copy()
+            env.update({
+                "CIRCUIT_TYPE": circuit_type,
+                "INPUT_JSON": input_path,
+                "ZKEY_PATH": pk_path,
+                "OUTDIR": base_path,
+                "PROVER_BIN": os.environ.get("PROVER_BIN", "icicle-snark"),
+                "CUDA_DEVICE": os.environ.get("CUDA_DEVICE", "0"),
+                # Performance optimizations
+                "NODE_OPTIONS": "--max-old-space-size=8192",
+                "CUDA_CACHE_DISABLE": "0",
+                "CUDA_CACHE_MAXSIZE": "2147483648",
+                "UV_THREADPOOL_SIZE": "1",
+                "OMP_NUM_THREADS": "1",
+            })
+            
+            # Try ultra-optimized script first, then ultra-fast, then regular script
+            ultra_optimized_script = os.path.join(snarkjs_fork_path, "scripts", "ultra_optimized_proof.sh")
+            ultra_fast_script = os.path.join(snarkjs_fork_path, "scripts", "ultra_fast_proof.sh")
+            run_proof_script = os.path.join(snarkjs_fork_path, "scripts", "run_proof.sh")
+            
+            if os.path.exists(ultra_optimized_script):
+                script_to_use = ultra_optimized_script
+                bt.logging.debug("Using ultra-optimized proof generation script")
+            elif os.path.exists(ultra_fast_script):
+                script_to_use = ultra_fast_script
+                bt.logging.debug("Using ultra-fast proof generation script")
+            else:
+                script_to_use = run_proof_script
+                bt.logging.debug("Using standard proof generation script")
+            
+            if not os.path.exists(script_to_use):
+                raise FileNotFoundError(f"snarkjs-fork script not found: {script_to_use}")
+            
+            # Make script executable
+            os.chmod(script_to_use, 0o755)
+            
+            # Set additional performance optimizations
+            env.update({
+                "CIRCUIT_TYPE": circuit_type,
+                "INPUT_JSON": input_path,
+                "ZKEY_PATH": pk_path,
+                "OUTDIR": base_path,
+                "PROVER_BIN": env["PROVER_BIN"],
+                "CUDA_DEVICE": env["CUDA_DEVICE"],
+                # Additional optimizations
+                "NODE_OPTIONS": "--max-old-space-size=8192 --optimize-for-size",
+                "CUDA_CACHE_DISABLE": "0",
+                "CUDA_CACHE_MAXSIZE": "2147483648",
+                "UV_THREADPOOL_SIZE": "1",
+                "OMP_NUM_THREADS": "1",
+                "NODE_ENV": "production"
+            })
+            
             # trunk-ignore(bandit/B603)
             result = subprocess.run(
-                [
-                    LOCAL_SNARKJS_PATH,
-                    "g16f",
-                    input_path,
-                    circuit_path,
-                    pk_path,
-                    proof_path,
-                    public_path,
-                ],
+                [script_to_use, circuit_type, input_path, pk_path, base_path, 
+                 env["PROVER_BIN"], env["CUDA_DEVICE"]],
+                env=env,
                 check=True,
                 capture_output=True,
                 text=True,
+                cwd=snarkjs_fork_path,
+                timeout=120  # Increased timeout for ultra-optimized script
+            )
+            
+            bt.logging.debug(f"snarkjs-fork completed: {result.stdout}")
+            bt.logging.trace(f"snarkjs-fork stderr: {result.stderr}")
+            
+            # Read generated proof and public files
+            with open(proof_path, "r", encoding="utf-8") as proof_file:
+                proof = proof_file.read()
+            with open(public_path, "r", encoding="utf-8") as public_file:
+                public_data = public_file.read()
+            
+            return proof, public_data
+            
+        except subprocess.TimeoutExpired:
+            bt.logging.warning("snarkjs-fork timed out, falling back to direct method")
+            return CircomHandler._proof_worker_direct(
+                input_path, circuit_path, pk_path, proof_path, public_path, base_path
+            )
+        except Exception as e:
+            bt.logging.warning(f"snarkjs-fork failed, falling back to direct method: {e}")
+            return CircomHandler._proof_worker_direct(
+                input_path, circuit_path, pk_path, proof_path, public_path, base_path
             )
 
-            bt.logging.debug(f"Proof generated: {proof_path}")
-            bt.logging.trace(f"Proof generation stdout: {result.stdout}")
-            bt.logging.trace(f"Proof generation stderr: {result.stderr}")
+    @staticmethod
+    def _proof_worker_direct(
+        input_path, circuit_path, pk_path, proof_path, public_path, base_path
+    ) -> tuple[str, str]:
+        """Direct GPU prover approach (fallback) with performance optimizations."""
+        try:
+            bt.logging.debug("Starting direct proof generation with performance optimizations")
+            total_start = time.time()
+            # 1) Ensure witness exists (.wtns) with caching
+            witness_wtns = os.path.join(
+                base_path,
+                f"witness_{os.path.basename(proof_path).replace('proof_', '').replace('.json','')}.wtns",
+            )
+            
+            # Check if witness exists and is recent (within 1 minute)
+            witness_exists = False
+            if os.path.exists(witness_wtns):
+                witness_stat = os.stat(witness_wtns)
+                input_stat = os.stat(input_path)
+                # Use witness if it's newer than input or within 1 minute
+                if witness_stat.st_mtime >= input_stat.st_mtime or (time.time() - witness_stat.st_mtime) < 60:
+                    witness_exists = True
+                    bt.logging.debug(f"Reusing existing witness: {witness_wtns}")
+            
+            if not witness_exists:
+                # Generate witness if missing or stale
+                bt.logging.debug("Generating fresh witness")
+                witness_start = time.time()
+                
+                # Try optimized witness generation methods in order of preference
+                try:
+                    # Method 1: Try native C++ witness generation (fastest)
+                    snarkjs_fork_path = os.environ.get("SNARKJS_FORK_PATH", "")
+                    if snarkjs_fork_path:
+                        native_witness = os.path.join(snarkjs_fork_path, "scripts", "native_witness.js")
+                        if os.path.exists(native_witness):
+                            bt.logging.debug("Using native C++ witness generation")
+                            env_native = os.environ.copy()
+                            env_native.update({
+                                "NODE_OPTIONS": "--max-old-space-size=8192",
+                                "UV_THREADPOOL_SIZE": "1",
+                                "NODE_ENV": "production"
+                            })
+                            
+                            circuit_dir = os.path.dirname(circuit_path)
+                            result = subprocess.run(
+                                ["node", native_witness, circuit_dir, input_path, witness_wtns],
+                                check=True,
+                                capture_output=True,
+                                text=True,
+                                env=env_native,
+                                timeout=30
+                            )
+                            witness_time = time.time() - witness_start
+                            bt.logging.debug(f"Native witness generated in {witness_time:.3f}s")
+                            witness_exists = True
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+                    bt.logging.debug(f"Native witness failed: {e}, trying ultra-fast method")
+                
+                if not witness_exists:
+                    try:
+                        # Method 2: Try ultra-fast witness generation
+                        snarkjs_fork_path = os.environ.get("SNARKJS_FORK_PATH", "")
+                        if snarkjs_fork_path:
+                            ultra_fast_witness = os.path.join(snarkjs_fork_path, "scripts", "ultra_fast_witness.js")
+                            if os.path.exists(ultra_fast_witness):
+                                bt.logging.debug("Using ultra-fast witness generation")
+                                env_ultra = os.environ.copy()
+                                env_ultra.update({
+                                    "NODE_OPTIONS": "--max-old-space-size=8192",
+                                    "UV_THREADPOOL_SIZE": "1",
+                                    "NODE_ENV": "production"
+                                })
+                                
+                                result = subprocess.run(
+                                    ["node", ultra_fast_witness, circuit_path, input_path, witness_wtns],
+                                    check=True,
+                                    capture_output=True,
+                                    text=True,
+                                    env=env_ultra,
+                                    timeout=30
+                                )
+                                witness_time = time.time() - witness_start
+                                bt.logging.debug(f"Ultra-fast witness generated in {witness_time:.3f}s")
+                                witness_exists = True
+                    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+                        bt.logging.debug(f"Ultra-fast witness failed: {e}, trying fast method")
+                
+                if not witness_exists:
+                    try:
+                        # Method 3: Try fast witness generation
+                        snarkjs_fork_path = os.environ.get("SNARKJS_FORK_PATH", "")
+                        if snarkjs_fork_path:
+                            fast_witness = os.path.join(snarkjs_fork_path, "scripts", "fast_witness.js")
+                            if os.path.exists(fast_witness):
+                                bt.logging.debug("Using fast witness generation")
+                                env_fast = os.environ.copy()
+                                env_fast.update({
+                                    "NODE_OPTIONS": "--max-old-space-size=8192",
+                                    "UV_THREADPOOL_SIZE": "1",
+                                    "NODE_ENV": "production"
+                                })
+                                
+                                result = subprocess.run(
+                                    ["node", fast_witness, circuit_path, input_path, witness_wtns],
+                                    check=True,
+                                    capture_output=True,
+                                    text=True,
+                                    env=env_fast,
+                                    timeout=60
+                                )
+                                witness_time = time.time() - witness_start
+                                bt.logging.debug(f"Fast witness generated in {witness_time:.3f}s")
+                                witness_exists = True
+                    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+                        bt.logging.debug(f"Fast witness failed: {e}, trying standard method")
+                
+                if not witness_exists:
+                    # Try optimized witness generation first
+                    try:
+                        # Use snarkjs with optimized settings
+                        env = os.environ.copy()
+                        env.update({
+                            "NODE_OPTIONS": "--max-old-space-size=8192",
+                            "UV_THREADPOOL_SIZE": "1",  # Single thread for Node.js
+                            "NODE_ENV": "production"
+                        })
+                        
+                        # trunk-ignore(bandit/B603)
+                        result = subprocess.run(
+                            [
+                                LOCAL_SNARKJS_PATH,
+                                "wtns",
+                                "calculate",
+                                circuit_path,
+                                input_path,
+                                witness_wtns,
+                            ],
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                            env=env,
+                            timeout=60  # 60 second timeout
+                        )
+                        witness_time = time.time() - witness_start
+                        bt.logging.debug(f"Witness generated in {witness_time:.3f}s")
+                    except subprocess.TimeoutExpired:
+                        bt.logging.warning("Witness generation timed out, retrying with basic method")
+                        # trunk-ignore(bandit/B603)
+                        subprocess.run(
+                            [
+                                LOCAL_SNARKJS_PATH,
+                                "wtns",
+                                "calculate",
+                                circuit_path,
+                                input_path,
+                                witness_wtns,
+                            ],
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                        )
+                    except subprocess.CalledProcessError as e:
+                        bt.logging.error(f"Witness generation failed with exit code {e.returncode}")
+                        bt.logging.error(f"STDOUT: {e.stdout}")
+                        bt.logging.error(f"STDERR: {e.stderr}")
+                        
+                        # Check if input file exists and is valid
+                        if not os.path.exists(input_path):
+                            raise RuntimeError(f"Input file not found: {input_path}")
+                        
+                        # Check if circuit file exists
+                        if not os.path.exists(circuit_path):
+                            raise RuntimeError(f"Circuit file not found: {circuit_path}")
+                        
+                        # Try with minimal memory settings
+                        bt.logging.warning("Retrying with minimal memory settings")
+                        env_minimal = os.environ.copy()
+                        env_minimal.update({
+                            "NODE_OPTIONS": "--max-old-space-size=2048",
+                            "UV_THREADPOOL_SIZE": "1"
+                        })
+                        
+                        try:
+                            # trunk-ignore(bandit/B603)
+                            subprocess.run(
+                                [
+                                    LOCAL_SNARKJS_PATH,
+                                    "wtns",
+                                    "calculate",
+                                    circuit_path,
+                                    input_path,
+                                    witness_wtns,
+                                ],
+                                check=True,
+                                capture_output=True,
+                                text=True,
+                                env=env_minimal,
+                                timeout=120  # Longer timeout for minimal settings
+                            )
+                        except subprocess.CalledProcessError as e2:
+                            bt.logging.error(f"Witness generation failed again with exit code {e2.returncode}")
+                            bt.logging.error(f"STDOUT: {e2.stdout}")
+                            bt.logging.error(f"STDERR: {e2.stderr}")
+                            
+                            # Try to get more detailed error information
+                            bt.logging.error(f"Input file size: {os.path.getsize(input_path) if os.path.exists(input_path) else 'N/A'}")
+                            bt.logging.error(f"Circuit file size: {os.path.getsize(circuit_path) if os.path.exists(circuit_path) else 'N/A'}")
+                            
+                            # Try to validate input JSON
+                            try:
+                                with open(input_path, 'r') as f:
+                                    input_data = json.load(f)
+                                    bt.logging.debug(f"Input data structure: {list(input_data.keys()) if isinstance(input_data, dict) else 'Not a dict'}")
+                            except Exception as json_err:
+                                bt.logging.error(f"Input JSON validation failed: {json_err}")
+                            
+                            raise RuntimeError(f"Witness generation failed after retries: {e2.stderr}") from e2
+
+            # 2) Run GPU prover using the exact icicle-snark command format
+            import shutil
+            prover_bin = os.environ.get("PROVER_BIN", "icicle-snark")
+            prover_path = os.environ.get("ICICLE_SNARK_PATH") or prover_bin
+            # Resolve full path if needed
+            resolved_prover = shutil.which(prover_path) or prover_path
+
+            # Use printf to pipe the command to icicle-snark (matching your format)
+            pipe_cmd = (
+                f"printf 'prove --witness {witness_wtns} --zkey {pk_path} --proof {proof_path} --public {public_path} --device CUDA\\nexit\\n' | {resolved_prover}"
+            )
+            try:
+                # trunk-ignore(bandit/B603)
+                result = subprocess.run(
+                    ["bash", "-c", pipe_cmd], check=True, capture_output=True, text=True
+                )
+                bt.logging.debug(f"Proof generated by {resolved_prover}: {proof_path}")
+                bt.logging.trace(f"GPU prover stdout: {result.stdout}")
+                bt.logging.trace(f"GPU prover stderr: {result.stderr}")
+            except subprocess.CalledProcessError as gpu_err:
+                # If command not found (127) or other failure, try direct-args mode
+                bt.logging.warning(
+                    f"GPU prover '{resolved_prover}' pipe mode failed (exit {gpu_err.returncode}), trying direct args"
+                )
+                direct_cmd = [
+                    resolved_prover,
+                    "prove",
+                    "--zkey",
+                    pk_path,
+                    "--witness",
+                    witness_wtns,
+                    "--proof",
+                    proof_path,
+                    "--public",
+                    public_path,
+                    "--device",
+                    "CUDA",
+                ]
+                try:
+                    # trunk-ignore(bandit/B603)
+                    result = subprocess.run(
+                        direct_cmd, check=True, capture_output=True, text=True
+                    )
+                    bt.logging.debug(
+                        f"Proof generated by {resolved_prover} (direct args): {proof_path}"
+                    )
+                    bt.logging.trace(f"GPU prover stdout: {result.stdout}")
+                    bt.logging.trace(f"GPU prover stderr: {result.stderr}")
+                except subprocess.CalledProcessError as gpu_err2:
+                    bt.logging.warning(
+                        f"GPU prover '{resolved_prover}' failed, falling back to snarkjs g16f: {gpu_err2}"
+                    )
+                bt.logging.warning(
+                    "Set environment variable PROVER_BIN or ICICLE_SNARK_PATH to the absolute path of icicle-snark if not in PATH."
+                )
+                # Fallback to snarkjs flow to avoid request failure
+                # trunk-ignore(bandit/B603)
+                result = subprocess.run(
+                    [
+                        LOCAL_SNARKJS_PATH,
+                        "g16f",
+                        input_path,
+                        circuit_path,
+                        pk_path,
+                        proof_path,
+                        public_path,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                bt.logging.debug(f"Proof generated by snarkjs fallback: {proof_path}")
+                bt.logging.trace(f"snarkjs stdout: {result.stdout}")
+                bt.logging.trace(f"snarkjs stderr: {result.stderr}")
+            
             proof = None
             with open(proof_path, "r", encoding="utf-8") as proof_file:
                 proof = proof_file.read()
             with open(public_path, "r", encoding="utf-8") as public_file:
                 public_data = public_file.read()
+            
+            total_time = time.time() - total_start
+            bt.logging.debug(f"Direct proof generation completed in {total_time:.3f}s")
+            
             return proof, public_data
         except subprocess.CalledProcessError as e:
             bt.logging.error(f"Error generating proof: {e}")
             bt.logging.error(f"Proof generation stdout: {e.stdout}")
             bt.logging.error(f"Proof generation stderr: {e.stderr}")
             raise
+
+    def _generate_witness_native(self, session, witness_wtns: str) -> bool:
+        """Generate witness using native C++ implementation (fastest method)."""
+        try:
+            # Check if snarkjs-fork is available
+            snarkjs_fork_path = os.environ.get("SNARKJS_FORK_PATH", "")
+            if not snarkjs_fork_path:
+                # Auto-detect snarkjs-fork path
+                possible_paths = [
+                    "/workspace/snarkjs-fork",
+                    "/workspace/omron-icicle-snark/snarkjs-fork", 
+                    os.path.join(os.path.dirname(__file__), "..", "..", "..", "snarkjs-fork"),
+                    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "snarkjs-fork"),
+                    os.path.join(os.getcwd(), "snarkjs-fork"),
+                    os.path.abspath("snarkjs-fork"),
+                ]
+                for path in possible_paths:
+                    if os.path.exists(os.path.join(path, "scripts", "native_witness.js")):
+                        snarkjs_fork_path = os.path.abspath(path)
+                        break
+            
+            if not snarkjs_fork_path or not os.path.exists(snarkjs_fork_path):
+                return False
+            
+            # Check if native module is available
+            native_witness_script = os.path.join(snarkjs_fork_path, "scripts", "native_witness.js")
+            if not os.path.exists(native_witness_script):
+                return False
+            
+            # Get circuit directory (should contain .dat file)
+            circuit_dir = os.path.dirname(session.model.paths.compiled_model)
+            
+            # Set optimized environment
+            env = os.environ.copy()
+            env.update({
+                "NODE_OPTIONS": "--max-old-space-size=8192",
+                "UV_THREADPOOL_SIZE": "1",
+                "NODE_ENV": "production"
+            })
+            
+            # Run native witness generation
+            result = subprocess.run(
+                ["node", native_witness_script, circuit_dir, session.session_storage.input_path, witness_wtns],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=30
+            )
+            
+            return os.path.exists(witness_wtns) and os.path.getsize(witness_wtns) > 0
+            
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+            bt.logging.debug(f"Native witness generation failed: {e}")
+            return False
+        except Exception as e:
+            bt.logging.debug(f"Native witness generation error: {e}")
+            return False
+
+    def _generate_witness_ultra_fast(self, session, witness_wtns: str) -> bool:
+        """Generate witness using ultra-fast witness generation script."""
+        try:
+            # Check if snarkjs-fork is available
+            snarkjs_fork_path = os.environ.get("SNARKJS_FORK_PATH", "")
+            if not snarkjs_fork_path:
+                # Auto-detect snarkjs-fork path
+                possible_paths = [
+                    "/workspace/snarkjs-fork",
+                    "/workspace/omron-icicle-snark/snarkjs-fork", 
+                    os.path.join(os.path.dirname(__file__), "..", "..", "..", "snarkjs-fork"),
+                    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "snarkjs-fork"),
+                    os.path.join(os.getcwd(), "snarkjs-fork"),
+                    os.path.abspath("snarkjs-fork"),
+                ]
+                for path in possible_paths:
+                    if os.path.exists(os.path.join(path, "scripts", "ultra_fast_witness.js")):
+                        snarkjs_fork_path = os.path.abspath(path)
+                        break
+            
+            if not snarkjs_fork_path or not os.path.exists(snarkjs_fork_path):
+                return False
+            
+            ultra_fast_script = os.path.join(snarkjs_fork_path, "scripts", "ultra_fast_witness.js")
+            if not os.path.exists(ultra_fast_script):
+                return False
+            
+            # Set optimized environment
+            env = os.environ.copy()
+            env.update({
+                "NODE_OPTIONS": "--max-old-space-size=8192",
+                "UV_THREADPOOL_SIZE": "1",
+                "NODE_ENV": "production"
+            })
+            
+            # Run ultra-fast witness generation
+            result = subprocess.run(
+                ["node", ultra_fast_script, session.model.paths.compiled_model, session.session_storage.input_path, witness_wtns],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=30
+            )
+            
+            return os.path.exists(witness_wtns) and os.path.getsize(witness_wtns) > 0
+            
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+            bt.logging.debug(f"Ultra-fast witness generation failed: {e}")
+            return False
+        except Exception as e:
+            bt.logging.debug(f"Ultra-fast witness generation error: {e}")
+            return False
+
+    def _generate_witness_fast(self, session, witness_wtns: str) -> bool:
+        """Generate witness using fast witness generation script."""
+        try:
+            # Check if snarkjs-fork is available
+            snarkjs_fork_path = os.environ.get("SNARKJS_FORK_PATH", "")
+            if not snarkjs_fork_path:
+                # Auto-detect snarkjs-fork path
+                possible_paths = [
+                    "/workspace/snarkjs-fork",
+                    "/workspace/omron-icicle-snark/snarkjs-fork", 
+                    os.path.join(os.path.dirname(__file__), "..", "..", "..", "snarkjs-fork"),
+                    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "snarkjs-fork"),
+                    os.path.join(os.getcwd(), "snarkjs-fork"),
+                    os.path.abspath("snarkjs-fork"),
+                ]
+                for path in possible_paths:
+                    if os.path.exists(os.path.join(path, "scripts", "fast_witness.js")):
+                        snarkjs_fork_path = os.path.abspath(path)
+                        break
+            
+            if not snarkjs_fork_path or not os.path.exists(snarkjs_fork_path):
+                return False
+            
+            fast_script = os.path.join(snarkjs_fork_path, "scripts", "fast_witness.js")
+            if not os.path.exists(fast_script):
+                return False
+            
+            # Set optimized environment
+            env = os.environ.copy()
+            env.update({
+                "NODE_OPTIONS": "--max-old-space-size=8192",
+                "UV_THREADPOOL_SIZE": "1",
+                "NODE_ENV": "production"
+            })
+            
+            # Run fast witness generation
+            result = subprocess.run(
+                ["node", fast_script, session.model.paths.compiled_model, session.session_storage.input_path, witness_wtns],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=60
+            )
+            
+            return os.path.exists(witness_wtns) and os.path.getsize(witness_wtns) > 0
+            
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+            bt.logging.debug(f"Fast witness generation failed: {e}")
+            return False
+        except Exception as e:
+            bt.logging.debug(f"Fast witness generation error: {e}")
+            return False
 
     @staticmethod
     def aggregate_proofs(

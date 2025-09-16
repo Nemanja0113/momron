@@ -49,15 +49,15 @@ class EZKLHandler(ProofSystemHandler):
         try:
             bt.logging.debug("Starting proof generation...")
 
-            self.generate_witness(session)
-            bt.logging.trace("Generating proof")
+            # self.generate_witness(session)
+            # bt.logging.trace("Generating proof")
 
             bt.logging.info(f"------Model ID: {session.session_storage.model_id}")
 
             # Prepare the request payload
             payload = {
                 "model_type": session.session_storage.model_id,
-                "witness_path": session.session_storage.witness_path,
+                "data_path": session.session_storage.input_path,
                 "proof_path": session.session_storage.proof_path
             }
             
@@ -80,7 +80,7 @@ class EZKLHandler(ProofSystemHandler):
                 [
                     "curl",
                     "-X", "POST",
-                    f"http://127.0.0.1:{port}/prove",
+                    f"http://127.0.0.1:{port}/gen-witness-and-prove",
                     "-H", "Content-Type: application/json",
                     "-d", json.dumps(payload),
                     "--silent",
