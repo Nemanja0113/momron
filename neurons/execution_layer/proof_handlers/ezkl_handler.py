@@ -15,7 +15,7 @@ from execution_layer.generic_input import GenericInput
 if TYPE_CHECKING:
     from execution_layer.verified_model_session import VerifiedModelSession
 
-LOCAL_EZKL_PATH = os.path.join(os.path.expanduser("~"), ".ezkl", "ezkl")
+LOCAL_EZKL_PATH = "/workspace/service/ezkl_default"
 
 
 class EZKLInputType(Enum):
@@ -63,14 +63,14 @@ class EZKLHandler(ProofSystemHandler):
             
             # Map model IDs to their corresponding server ports
             model_port_mapping = {
-                "1876cfa9fb3c418b2559f3f7074db20565b5ca7237efdd43b907d9d697a452c4": 8100,
-                "43ecaacaded5ed16c9e08bc054366e409c7925245eca547472b27f2a61469cc5": 8102,
-                "31df94d233053d9648c3c57362d9aa8aaa0f77761ac520af672103dbb387a6a5": 8104
+                "1876cfa9fb3c418b2559f3f7074db20565b5ca7237efdd43b907d9d697a452c4": 8101,
+                "43ecaacaded5ed16c9e08bc054366e409c7925245eca547472b27f2a61469cc5": 8103,
+                "31df94d233053d9648c3c57362d9aa8aaa0f77761ac520af672103dbb387a6a5": 8105
             }
             
             # Get the port for the current model ID
             model_id = session.session_storage.model_id
-            port = model_port_mapping.get(model_id, 8100)  # Default to 8100 if model ID not found
+            port = model_port_mapping.get(model_id, 8101)  # Default to 8100 if model ID not found
             
             start_time = time.time()
 
@@ -105,9 +105,43 @@ class EZKLHandler(ProofSystemHandler):
             return json.dumps(proof), json.dumps(proof["instances"])
 
         except Exception as e:
-            bt.logging.error(f"An error occurred during proof generation: {e}")
-            traceback.print_exc()
-            raise
+            try:
+                bt.logging.debug("Starting proof generation with exception...")
+
+                self.generate_witness(session)
+                bt.logging.trace("Generating proof")
+
+                result = subprocess.run(
+                    [
+                        LOCAL_EZKL_PATH,
+                        "prove",
+                        "--witness",
+                        session.session_storage.witness_path,
+                        "--compiled-circuit",
+                        session.model.paths.compiled_model,
+                        "--pk-path",
+                        session.model.paths.pk,
+                        "--proof-path",
+                        session.session_storage.proof_path,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+                bt.logging.trace(
+                    f"Proof generated with exception: {session.session_storage.proof_path}, result: {result.stdout}"
+                )
+
+                with open(session.session_storage.proof_path, "r", encoding="utf-8") as f:
+                    proof = json.load(f)
+
+                return json.dumps(proof), json.dumps(proof["instances"])
+
+            except Exception as e:
+                bt.logging.error(f"An error occurred during proof generation: {e}")
+                traceback.print_exc()
+                raise
 
     def verify_proof(
         self,
