@@ -41,7 +41,15 @@ def get_shuffled_uids(
 
         cycle_start_epoch = (current_epoch // NUM_MINER_GROUPS) * NUM_MINER_GROUPS
         seed_block_num = get_epoch_start_block(cycle_start_epoch, metagraph.netuid)
-        block_hash = subtensor.get_block_hash(seed_block_num)
+        
+        # Ensure we don't try to get block hash for negative block numbers
+        if seed_block_num < 0:
+            bt.logging.warning(
+                f"Seed block number {seed_block_num} is negative for epoch {cycle_start_epoch}, using current epoch as seed"
+            )
+            block_hash = None
+        else:
+            block_hash = subtensor.get_block_hash(seed_block_num)
 
         if not block_hash:
             bt.logging.warning(
