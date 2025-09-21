@@ -44,7 +44,7 @@ class CircomHandler(ProofSystemHandler):
                 pk_path=session.model.paths.pk,
                 proof_path=session.session_storage.proof_path,
                 public_path=session.session_storage.public_path,
-                base_path=session.session_storage.base_path,
+                model_id=session.session_storage.model_id,
             )
 
             return proof
@@ -220,50 +220,101 @@ class CircomHandler(ProofSystemHandler):
 
     @staticmethod
     def proof_worker(
-        input_path, circuit_path, pk_path, proof_path, public_path, base_path
+        input_path, circuit_path, pk_path, proof_path, public_path, model_id
     ) -> tuple[str, str]:
         try:
-            # Check if snarkjs-fork wrapper should be used (default to true for better performance)
-            use_snarkjs_fork = os.environ.get("USE_SNARKJS_FORK", "true").lower() == "true"
-            snarkjs_fork_path = os.environ.get("SNARKJS_FORK_PATH", "")
+            # start_time = time.time()
+            size_mapping = {
+                "1550853037e01d93c0831e2a4f80de7811b1c6780fb36b3cee89f4ba524df1be": 1024,
+                "4a87c995300f4e9ad9add9d5b800eb93bb3ecd3f9459b617f9924a211407a88c": 256
+            }
+
+            transform_size = size_mapping.get(model_id, 1024)
+
+            input_path_transformed = input_path.replace("input_", "input_transformed_")
+
+            # transform_time = time.time() - start_time
+            # bt.logging.info(f"Transform input time 1: {transform_time}s")
+
+            # start_time1 = time.time()
+
+            transfer_result = subprocess.run(
+                [
+                    "python3",
+                    "./neurons/execution_layer/transform_input.py",
+                    input_path,
+                    input_path_transformed,
+                    str(transform_size)
+                ],
+            )
+            if transfer_result.returncode != 0:
+                bt.logging.error(f"Failed to transfer input file: {transfer_result.stderr}")
+                raise RuntimeError(f"Failed to transfer input file: {transfer_result.stderr}")
+
+            # transfer_time = time.time() - start_time1
+            # bt.logging.info(f"Transfer input time 2: {transfer_time}s")
+            # start_time2 = time.time()
+
+            graph_mapping = {
+                "1550853037e01d93c0831e2a4f80de7811b1c6780fb36b3cee89f4ba524df1be": "./graph_1550.bin",
+                "4a87c995300f4e9ad9add9d5b800eb93bb3ecd3f9459b617f9924a211407a88c": "./graph_4a87.bin"
+            }
+
+            graph_path = graph_mapping.get(model_id, "./graph_1550.bin")
+
+
+            # transfer_time1 = time.time() - start_time2
+            # bt.logging.info(f"Transfer input time 3: {transfer_time1}s")
+            # start_time3 = time.time()
+
+            # Prepare the request payload
+            payload = {
+                "input_file": input_path_transformed,
+                "circuit_file": graph_path,
+                "zkey_file": pk_path,
+                "proof_output": proof_path,
+                "public_output": public_path,
+                "device": "CUDA"
+            }
+
+            # Map model IDs to their corresponding server ports
+            model_port_mapping = {
+                "1550853037e01d93c0831e2a4f80de7811b1c6780fb36b3cee89f4ba524df1be": 8106,
+                "4a87c995300f4e9ad9add9d5b800eb93bb3ecd3f9459b617f9924a211407a88c": 8107
+            }
             
-            # Auto-detect snarkjs-fork path if not set
-            if use_snarkjs_fork and not snarkjs_fork_path:
-                # Look for snarkjs-fork in common locations
-                possible_paths = [
-                    "/workspace/snarkjs-fork",
-                    "/workspace/omron-icicle-snark/snarkjs-fork", 
-                    os.path.join(os.path.dirname(__file__), "..", "..", "..", "snarkjs-fork"),
-                    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "snarkjs-fork"),
-                    # Add current working directory and relative paths
-                    os.path.join(os.getcwd(), "snarkjs-fork"),
-                    os.path.abspath("snarkjs-fork"),
-                    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "snarkjs-fork"))
-                ]
-                for path in possible_paths:
-                    if os.path.exists(os.path.join(path, "scripts", "run_proof.sh")):
-                        snarkjs_fork_path = os.path.abspath(path)
-                        bt.logging.info(f"Auto-detected snarkjs-fork path: {snarkjs_fork_path}")
-                        break
-                
-                # If still not found, try to find it relative to the current file
-                if not snarkjs_fork_path:
-                    current_file_dir = os.path.dirname(os.path.abspath(__file__))
-                    # Go up to the project root and look for snarkjs-fork
-                    project_root = os.path.abspath(os.path.join(current_file_dir, "..", "..", "..", ".."))
-                    snarkjs_fork_candidate = os.path.join(project_root, "snarkjs-fork")
-                    if os.path.exists(os.path.join(snarkjs_fork_candidate, "scripts", "run_proof.sh")):
-                        snarkjs_fork_path = snarkjs_fork_candidate
-                        bt.logging.info(f"Found snarkjs-fork at project root: {snarkjs_fork_path}")
-            
-            if use_snarkjs_fork and snarkjs_fork_path and os.path.exists(snarkjs_fork_path):
-                return CircomHandler._proof_worker_snarkjs_fork(
-                    input_path, circuit_path, pk_path, proof_path, public_path, base_path, snarkjs_fork_path
-                )
-            else:
-                return CircomHandler._proof_worker_direct(
-                    input_path, circuit_path, pk_path, proof_path, public_path, base_path
-                )
+            # Get the port for the current model ID
+            port = model_port_mapping.get(model_id, 8106)  # Default to 8106 if model ID not found
+
+            # bt.logging.info(f"Sending request to ICICLE service time: {time.time() - start_time3}s")
+            # start_time4 = time.time()
+
+            # Make HTTP request to ICICLE service
+            result = subprocess.run(
+                [
+                    "curl",
+                    "-X", "POST",
+                    f"http://127.0.0.1:{port}/prove",
+                    "-H", "Content-Type: application/json",
+                    "-d", json.dumps(payload)
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            # proof_time = time.time() - start_time4
+            # bt.logging.info(f"Proof generation time: {proof_time}s")
+
+            bt.logging.debug(f"Proof generated: {proof_path}")
+            bt.logging.trace(f"Proof generation stdout: {result.stdout}")
+            bt.logging.trace(f"Proof generation stderr: {result.stderr}")
+            proof = None
+            with open(proof_path, "r", encoding="utf-8") as proof_file:
+                proof = proof_file.read()
+            with open(public_path, "r", encoding="utf-8") as public_file:
+                public_data = public_file.read()
+            return proof, public_data
         except subprocess.CalledProcessError as e:
             bt.logging.error(f"Error generating proof: {e}")
             bt.logging.error(f"Proof generation stdout: {e.stdout}")
