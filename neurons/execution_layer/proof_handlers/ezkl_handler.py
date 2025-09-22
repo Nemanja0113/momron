@@ -15,7 +15,7 @@ from execution_layer.generic_input import GenericInput
 if TYPE_CHECKING:
     from execution_layer.verified_model_session import VerifiedModelSession
 
-LOCAL_EZKL_PATH = "/workspace/service/ezkl_default"
+LOCAL_EZKL_PATH = "/workspace/project-config/ezkl/service/ezkl"
 
 
 class EZKLInputType(Enum):
@@ -64,8 +64,8 @@ class EZKLHandler(ProofSystemHandler):
             # Map model IDs to their corresponding server ports
             model_port_mapping = {
                 "1876cfa9fb3c418b2559f3f7074db20565b5ca7237efdd43b907d9d697a452c4": 8101,
-                "43ecaacaded5ed16c9e08bc054366e409c7925245eca547472b27f2a61469cc5": 8103,
-                "31df94d233053d9648c3c57362d9aa8aaa0f77761ac520af672103dbb387a6a5": 8105
+                "31df94d233053d9648c3c57362d9aa8aaa0f77761ac520af672103dbb387a6a5": 8103,
+                "43ecaacaded5ed16c9e08bc054366e409c7925245eca547472b27f2a61469cc5": 8105
             }
             
             # Get the port for the current model ID

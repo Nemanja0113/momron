@@ -15,7 +15,7 @@ from execution_layer.generic_input import GenericInput
 if TYPE_CHECKING:
     from execution_layer.verified_model_session import VerifiedModelSession
 
-LOCAL_SNARKJS_DEFAULT_PATH = "/workspace/service/snarkjs/icicle-snark"
+LOCAL_SNARKJS_DEFAULT_PATH = "/workspace/project-config/circom/icicle-snark"
 
 class CircomHandler(ProofSystemHandler):
     def gen_input_file(self, session):
@@ -242,7 +242,7 @@ class CircomHandler(ProofSystemHandler):
             transfer_result = subprocess.run(
                 [
                     "python3",
-                    "./neurons/execution_layer/transform_input.py",
+                    "./execution_layer/transform_input.py",
                     input_path,
                     input_path_transformed,
                     str(transform_size)
@@ -280,12 +280,12 @@ class CircomHandler(ProofSystemHandler):
 
             # Map model IDs to their corresponding server ports
             model_port_mapping = {
-                "1550853037e01d93c0831e2a4f80de7811b1c6780fb36b3cee89f4ba524df1be": 8108,
+                "1550853037e01d93c0831e2a4f80de7811b1c6780fb36b3cee89f4ba524df1be": 8107,
                 "4a87c995300f4e9ad9add9d5b800eb93bb3ecd3f9459b617f9924a211407a88c": 8109
             }
             
             # Get the port for the current model ID
-            port = model_port_mapping.get(model_id, 8108)  # Default to 8106 if model ID not found
+            port = model_port_mapping.get(model_id, 8107)  # Default to 8106 if model ID not found
 
             # bt.logging.info(f"Sending request to ICICLE service time: {time.time() - start_time3}s")
             # start_time4 = time.time()
@@ -322,11 +322,11 @@ class CircomHandler(ProofSystemHandler):
             try:
                 bt.logging.info("Starting proof generation with exception...")
                 graph_mapping = {
-                    "1550853037e01d93c0831e2a4f80de7811b1c6780fb36b3cee89f4ba524df1be": "/workspace/service/snarkjs/graph_1550.bin",
-                    "4a87c995300f4e9ad9add9d5b800eb93bb3ecd3f9459b617f9924a211407a88c": "/workspace/service/snarkjs/graph_4a87.bin"
+                    "1550853037e01d93c0831e2a4f80de7811b1c6780fb36b3cee89f4ba524df1be": "/workspace/project-config/circom/graph_1550.bin",
+                    "4a87c995300f4e9ad9add9d5b800eb93bb3ecd3f9459b617f9924a211407a88c": "/workspace/project-config/circom/graph_4a87.bin"
                 }
 
-                graph_path = graph_mapping.get(model_id, "/workspace/service/snarkjs/graph_1550.bin")
+                graph_path = graph_mapping.get(model_id, "/workspace/project-config/circom/graph_1550.bin")
 
                 result = subprocess.run(
                     [
