@@ -53,7 +53,7 @@ case "$(uname)" in
         apt update
         apt install -y "${APT_PACKAGES[@]}"
 
-        curl -fsSL "https://deb.nodesource.com/setup_${NODE_VERSION}.x" | -E bash -
+        curl -fsSL "https://deb.nodesource.com/setup_${NODE_VERSION}.x" | bash -
         apt install -y nodejs
         ;;
 
