@@ -242,7 +242,7 @@ class CircomHandler(ProofSystemHandler):
             transfer_result = subprocess.run(
                 [
                     "python3",
-                    "./execution_layer/transform_input.py",
+                    "/workspace/project-config/circom/transform_input.py",
                     input_path,
                     input_path_transformed,
                     str(transform_size)
@@ -256,12 +256,12 @@ class CircomHandler(ProofSystemHandler):
             # bt.logging.info(f"Transfer input time 2: {transfer_time}s")
             # start_time2 = time.time()
 
-            graph_mapping = {
-                "1550853037e01d93c0831e2a4f80de7811b1c6780fb36b3cee89f4ba524df1be": "./graph_1550.bin",
-                "4a87c995300f4e9ad9add9d5b800eb93bb3ecd3f9459b617f9924a211407a88c": "./graph_4a87.bin"
-            }
+            # graph_mapping = {
+            #     "1550853037e01d93c0831e2a4f80de7811b1c6780fb36b3cee89f4ba524df1be": "./graph_1550.bin",
+            #     "4a87c995300f4e9ad9add9d5b800eb93bb3ecd3f9459b617f9924a211407a88c": "./graph_4a87.bin"
+            # }
 
-            graph_path = graph_mapping.get(model_id, "./graph_1550.bin")
+            # graph_path = graph_mapping.get(model_id, "./graph_1550.bin")
 
 
             # transfer_time1 = time.time() - start_time2
@@ -271,11 +271,11 @@ class CircomHandler(ProofSystemHandler):
             # Prepare the request payload
             payload = {
                 "input_file": input_path_transformed,
-                "circuit_file": graph_path,
-                "zkey_file": pk_path,
+                # "circuit_file": graph_path,
+                # "zkey_file": pk_path,
                 "proof_output": proof_path,
-                "public_output": public_path,
-                "device": "CUDA"
+                "public_output": public_path
+                # "device": "CUDA"
             }
 
             # Map model IDs to their corresponding server ports
